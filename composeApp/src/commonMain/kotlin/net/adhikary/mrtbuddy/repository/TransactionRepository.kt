@@ -11,6 +11,7 @@ import net.adhikary.mrtbuddy.data.TransactionEntity
 import net.adhikary.mrtbuddy.data.TransactionEntityWithAmount
 import net.adhikary.mrtbuddy.model.CardReadResult
 import net.adhikary.mrtbuddy.nfc.service.TimestampService
+import net.adhikary.mrtbuddy.utils.isRapidPassIdm
 
 class TransactionRepository(
     private val cardDao: CardDao,
@@ -20,8 +21,30 @@ class TransactionRepository(
 
     suspend fun saveCardReadResult(result: CardReadResult) {
         val currentTime = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
-        val cardEntity = CardEntity(idm = result.idm, name = null, lastScanTime = currentTime)
-        cardDao.insertCard(cardEntity)
+        
+        // Check if card exists to determine if we need to set a default name
+        val existingCard = cardDao.getCardByIdm(result.idm)
+        val cardName = if (existingCard == null || existingCard.name == null) {
+            // Count existing cards of the same type to assign "MRT Pass 1", "MRT Pass 2", etc.
+            val allCards = cardDao.getAllCards()
+            val isRapid = isRapidPassIdm(result.idm)
+            val typePrefix = if (isRapid) "Rapid Pass" else "MRT Pass"
+            
+            // Filter cards that are of the same type
+            val sameTypeCount = allCards.count { 
+                isRapidPassIdm(it.idm) == isRapid 
+            }
+            
+            "$typePrefix ${sameTypeCount + 1}"
+        } else {
+            existingCard.name
+        }
+
+        val cardEntity = CardEntity(idm = result.idm, name = cardName, lastScanTime = currentTime)
+        cardDao.insertCard(cardEntity) // This handles conflict with REPLACE strategy usually, or we need to be careful
+        // If insertCard uses OnConflictStrategy.REPLACE, it overwrites name if we don't pass it.
+        // The CardEntity data class has name. If we pass a new CardEntity with the name logic above, it preserves or sets it.
+        
         cardDao.updateLastScanTime(result.idm, currentTime)
 
         val scanEntity = ScanEntity(cardIdm = result.idm)

@@ -30,7 +30,10 @@ class HistoryScreenViewModel(
                     _state.update { it.copy(isLoading = true) }
                     try {
                         val cards = transactionRepository.getAllCards()
-                        val cardsWithBalance = cards.map { card ->
+                        // Sort cards by lastScanTime descending so the latest scanned is first
+                        val sortedCards = cards.sortedByDescending { it.lastScanTime ?: 0 }
+                        
+                        val cardsWithBalance = sortedCards.map { card ->
                             val balance = transactionRepository.getLatestBalanceByCardIdm(card.idm)
                             CardWithBalance(card, balance)
                         }

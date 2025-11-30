@@ -1,6 +1,7 @@
 import com.github.jk1.license.render.InventoryMarkdownReportRenderer
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import com.google.devtools.ksp.gradle.KspExtension
 
 
 plugins {
@@ -9,7 +10,7 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.ksp)
-    alias(libs.plugins.room)
+    // alias(libs.plugins.room)
     alias(libs.plugins.jaredsburrowsLicense)
 }
 
@@ -137,8 +138,8 @@ dependencies {
     debugImplementation(compose.uiTooling)
 }
 
-room {
-    schemaDirectory("$projectDir/schemas")
+configure<KspExtension> {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 licenseReport {
@@ -192,4 +193,13 @@ tasks.register("copyLicenseReportToAssets") {
 
 tasks.named("preBuild").configure {
     dependsOn("copyLicenseReportToAssets")
+}
+
+tasks.register<Copy>("exportDebugApk") {
+    dependsOn("assembleDebug")
+    doNotTrackState("Copying into a directory that might contain locked files")
+    from(layout.buildDirectory.dir("outputs/apk/debug"))
+    include("*.apk")
+    into(layout.buildDirectory.dir("outputs/exported-apk"))
+    rename { "mrt-buddy-debug.apk" }
 }
