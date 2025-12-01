@@ -30,6 +30,7 @@ sqlite = "2.5.0-SNAPSHOT"
 napier = "2.7.1"
 coilCompose = "3.0.4"
 zoomimageComposeCoil3 = "1.1.0-rc01"
+kotlin-android = "2.0.21"
 
 [libraries]
 compose-webview-multiplatform = { module = "io.github.kevinnzou:compose-webview-multiplatform", version.ref = "composeWebviewMultiplatform" }
@@ -72,3 +73,4 @@ kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref =
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 room = { id = "androidx.room", version.ref = "androidx-room" }
 jaredsburrowsLicense = { id = "com.github.jk1.dependency-license-report", version.ref = "dependency-license-report" }
+kotlinAndroid = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin-android" }

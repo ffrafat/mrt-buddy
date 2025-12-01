@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Titas Scanner</string>
+    <string name="tap_card">Tap Titas Gas Card</string>
+    <string name="scanning">Scanning all services...</string>
+    <string name="no_nfc">NFC not available</string>
+</resources>
