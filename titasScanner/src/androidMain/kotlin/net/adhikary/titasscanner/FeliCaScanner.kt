@@ -32,6 +32,49 @@ class FeliCaScanner {
     )
     
     /**
+     * Request the actual service code list from the card (FeliCa Command 0x02)
+     */
+    private fun requestServiceCodeList(nfcF: NfcF): List<Int> {
+        try {
+            val idm = nfcF.tag.id
+            val command = ByteArray(11)
+            var idx = 0
+            
+            command[idx++] = 0x0B.toByte() // Length
+            command[idx++] = 0x02.toByte() // Command: Request Service Code
+            
+            // Copy IDM
+            idm.copyInto(destination = command, destinationOffset = idx)
+            idx += idm.size
+            
+            command[idx++] = 0x01.toByte() // Number of nodes = 1 (request all)
+            
+            val response = nfcF.transceive(command)
+            
+            if (response.size < 13) return emptyList()
+            
+            // Parse service codes from response
+            val numServices = response[10].toInt() and 0xFF
+            val serviceCodes = mutableListOf<Int>()
+            
+            for (i in 0 until numServices) {
+                val offset = 11 + (i * 2)
+                if (offset + 1 < response.size) {
+                    val serviceCode = ((response[offset + 1].toInt() and 0xFF) shl 8) or
+                                     (response[offset].toInt() and 0xFF)
+                    serviceCodes.add(serviceCode)
+                    Log.d(TAG, "Card reports service code: 0x${serviceCode.toString(16).uppercase()}")
+                }
+            }
+            
+            return serviceCodes
+        } catch (e: Exception) {
+            Log.d(TAG, "Could not request service code list: ${e.message}")
+            return emptyList()
+        }
+    }
+    
+    /**
      * Scan ALL common FeliCa service codes to find which ones are active
      */
     fun scanAllServices(tag: Tag): CompleteScanResult {
@@ -49,8 +92,17 @@ class FeliCaScanner {
             Log.d(TAG, "Manufacturer: $manufacturer")
             Log.d(TAG, "System Code: $systemCode")
             
-            // Common FeliCa service codes to try
-            val serviceCodesToTry = listOf(
+            // First, try to request actual service codes from the card
+            val reportedServices = requestServiceCodeList(nfcF)
+            
+            // Expanded list of service codes to try (including ones specific to system 0x92E4)
+            val serviceCodesToTry = mutableListOf<Int>()
+            
+            // Add reported services first
+            serviceCodesToTry.addAll(reportedServices)
+            
+            // Add common codes
+            serviceCodesToTry.addAll(listOf(
                 0x220F, // Transit (MRT uses this)
                 0x130F, // Utility services
                 0x118B, // E-money/utility
@@ -59,16 +111,33 @@ class FeliCaScanner {
                 0x008B, // Basic service  
                 0x100B, // Utility
                 0x1A8B, // E-money
-0x0F8B, // Alternative
+                0x0F8B, // Alternative
                 0x200F, // Transit variant
                 0x2F0F, // Another variant
                 0x1317, // Utility
                 0x1387, // Alternative utility
-            )
+                // Additional utility/gas service codes
+                0x080B, // Utility variant
+                0x088B, // Utility variant 2
+                0x0F0B, // Utility variant 3
+                0x170B, // Utility variant 4
+                0x178B, // Utility variant 5
+                // Try all possible low service codes (0x0000 - 0x00FF)
+                0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008,
+                0x0009, 0x000A, 0x000B, 0x000C, 0x000D, 0x000E, 0x000F,
+                // Try variations with high byte 0x01
+                0x0100, 0x0101, 0x0102, 0x0103, 0x0108, 0x0109, 0x010A, 0x010B,
+                0x010F, 0x0180, 0x0188, 0x018B, 0x018F,
+            ))
+            
+            // Remove duplicates
+            val uniqueServices = serviceCodesToTry.distinct()
             
             val results = mutableListOf<ServiceScanResult>()
             
-            for (serviceCode in serviceCodesToTry) {
+            Log.d(TAG, "Trying ${uniqueServices.size} service codes...")
+            
+            for (serviceCode in uniqueServices) {
                 Log.d(TAG, "Trying service code: 0x${serviceCode.toString(16).uppercase()}")
                 val result = tryReadService(nfcF, serviceCode)
                 if (result != null) {
@@ -217,47 +286,112 @@ class FeliCaScanner {
     
     /**
      * Try to interpret what a block might contain
+     * Enhanced to specifically look for 11 m³ (or any known balance)
      */
     private fun interpretBlock(block: ByteArray, blockNumber: Int): String {
         val interpretations = mutableListOf<String>()
         
-        // Try as little-endian integers
-        val int24 = extractInt24(block, 0)
-        val int32 = extractInt32(block, 0)
-        
-        // Check if values are in reasonable ranges
-        if (int24 in 0..10000) {
-            interpretations.add("Int24[0-2]=$int24 (might be Taka or m³)")
+        // Try EVERY byte offset for different data types
+        for (offset in 0 until minOf(13, block.size - 3)) {
+            // Little-endian float (most likely for gas volume)
+            try {
+                val floatLE = java.nio.ByteBuffer.wrap(block, offset, 4)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN).float
+                if (floatLE in 0.0f..1000.0f && !floatLE.isNaN() && !floatLE.isInfinite()) {
+                    val highlighted = if (floatLE in 10.5f..11.5f) "🎯 MATCH!" else ""
+                    interpretations.add("Float-LE[$offset-${offset+3}]=${"%.2f".format(floatLE)} $highlighted")
+                }
+            } catch (e: Exception) {}
+            
+            // Big-endian float
+            try {
+                val floatBE = java.nio.ByteBuffer.wrap(block, offset, 4)
+                    .order(java.nio.ByteOrder.BIG_ENDIAN).float
+                if (floatBE in 0.0f..1000.0f && !floatBE.isNaN() && !floatBE.isInfinite()) {
+                    val highlighted = if (floatBE in 10.5f..11.5f) "🎯 MATCH!" else ""
+                    interpretations.add("Float-BE[$offset-${offset+3}]=${"%.2f".format(floatBE)} $highlighted")
+                }
+            } catch (e: Exception) {}
         }
         
-        if (int32 in 0..100000) {
-            interpretations.add("Int32[0-3]=$int32")
+        // Try integers at different offsets
+        for (offset in 0 until minOf(14, block.size - 1)) {
+            // 16-bit little-endian
+            if (offset + 1 < block.size) {
+                val int16LE = ((block[offset + 1].toInt() and 0xFF) shl 8) or
+                             (block[offset].toInt() and 0xFF)
+                if (int16LE in 1..1000) {
+                    val highlighted = if (int16LE in 10..12) "🎯 MATCH!" else ""
+                    interpretations.add("Int16-LE[$offset-${offset+1}]=$int16LE $highlighted")
+                }
+            }
+            
+            // 16-bit big-endian  
+            if (offset + 1 < block.size) {
+                val int16BE = ((block[offset].toInt() and 0xFF) shl 8) or
+                             (block[offset + 1].toInt() and 0xFF)
+                if (int16BE in 1..1000) {
+                    val highlighted = if (int16BE in 10..12) "🎯 MATCH!" else ""
+                    interpretations.add("Int16-BE[$offset-${offset+1}]=$int16BE $highlighted")
+                }
+            }
+            
+            // Single byte
+            val singleByte = block[offset].toInt() and 0xFF
+            if (singleByte in 1..100) {
+                val highlighted = if (singleByte in 10..12) "🎯 MATCH!" else ""
+                interpretations.add("Byte[$offset]=$singleByte $highlighted")
+            }
         }
         
-        // Try as float
+        // Try 24-bit and 32-bit at standard positions
+        val int24LE = extractInt24(block, 0)
+        val int32LE = extractInt32(block, 0)
+        
+        if (int24LE in 1..10000) {
+            val highlighted = if (int24LE in 10..12) "🎯 MATCH!" else ""
+            interpretations.add("Int24-LE[0-2]=$int24LE $highlighted")
+        }
+        
+        if (int32LE in 1..100000) {
+            val highlighted = if (int32LE in 10..12 || int32LE in 1100..1100) "🎯 MATCH!" else ""
+            interpretations.add("Int32-LE[0-3]=$int32LE $highlighted")
+        }
+
+        // Try as BCD (Binary Coded Decimal) - common in utility meters
         try {
-            val floatVal = java.nio.ByteBuffer.wrap(block).order(java.nio.ByteOrder.LITTLE_ENDIAN).float
-            if (floatVal in 0.0f..1000.0f && !floatVal.isNaN() && !floatVal.isInfinite()) {
-                interpretations.add("Float[0-3]=${"%.2f".format(floatVal)} m³?")
+            for (offset in 0 until minOf(15, block.size)) {
+                val bcd = block[offset].toInt() and 0xFF
+                val tens = (bcd shr 4) and 0x0F
+                val ones = bcd and 0x0F
+                if (tens <= 9 && ones <= 9) {
+                    val value = tens * 10 + ones
+                    if (value in 1..99) {
+                        val highlighted = if (value in 10..12) "🎯 MATCH!" else ""
+                        interpretations.add("BCD[$offset]=$value $highlighted")
+                    }
+                }
             }
         } catch (e: Exception) {}
         
         // Try as ASCII string
         val ascii = block.filter { it in 32..126 }.map { it.toInt().toChar() }.joinToString("")
-        if (ascii.length > 3) {
-            interpretations.add("ASCII=\"$ascii\"")
+        if (ascii.length > 2) {
+            val highlighted = if ("11" in ascii) "🎯 MATCH!" else ""
+            interpretations.add("ASCII=\"$ascii\" $highlighted")
         }
         
-        // Check for timestamp patterns (like MRT does)
-        val timestamp24 = extractInt24BigEndian(block, 4)
-        if (timestamp24 > 0) {
-            interpretations.add("Timestamp?[4-6]=0x${timestamp24.toString(16)}")
+        // Try as decimal string in bytes
+        val decimalChars = block.filter { it in 48..57 }.map { (it - 48).toChar() }.joinToString("")
+        if (decimalChars.length > 1) {
+            val highlighted = if ("11" in decimalChars) "🎯 MATCH!" else ""
+            interpretations.add("Decimal digits=\"$decimalChars\" $highlighted")
         }
         
         return if (interpretations.isEmpty()) {
             "Unknown"
         } else {
-            interpretations.joinToString("; ")
+            interpretations.take(10).joinToString("; ") // Limit to top 10 to avoid clutter
         }
     }
     
